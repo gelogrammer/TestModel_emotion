@@ -13,6 +13,7 @@ The system uses reinforcement learning to learn from feedback, allowing it to ad
 - Self-improvement through reinforcement learning
 - No pre-labeled dataset required
 - Visualization tools for tracking progress
+- Multi-modal reinforcement learning capabilities
 
 ## Installation
 
@@ -27,7 +28,7 @@ The system uses reinforcement learning to learn from feedback, allowing it to ad
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/yourusername/speech-emotion-rl.git
+   git clone https://github.com/gelogrammer/TestModel_emotion.git
    cd speech-emotion-rl
    ```
 
@@ -41,6 +42,68 @@ The system uses reinforcement learning to learn from feedback, allowing it to ad
    ```bash
    pip install -r requirements.txt
    ```
+
+### Package Requirements
+
+The project requires the following main packages (see requirements.txt for full details):
+
+```
+# Core libraries
+numpy>=1.20.0
+scipy>=1.7.0
+pandas>=1.3.0
+matplotlib>=3.4.0
+seaborn>=0.11.0
+
+# Deep Learning
+torch>=1.10.0
+torchaudio>=0.10.0
+transformers>=4.15.0
+
+# Audio processing
+librosa>=0.8.1
+sounddevice>=0.4.4
+pyaudio>=0.2.11
+webrtcvad>=2.0.10
+
+# Machine Learning & Reinforcement Learning
+scikit-learn>=1.0.0
+tensorboard>=2.7.0
+gym>=0.21.0
+stable-baselines3>=1.4.0
+
+# Visualization
+plotly>=5.3.0
+streamlit>=1.2.0
+```
+
+### Windows-specific installation notes
+
+On Windows, you might encounter issues installing some packages:
+
+1. For PyAudio:
+   ```bash
+   pip install pipwin
+   pipwin install pyaudio
+   ```
+
+2. For webrtcvad, you may need Microsoft Visual C++ Build Tools:
+   - Install [Microsoft Visual C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+   - Then install webrtcvad: `pip install webrtcvad`
+
+3. For torch with CUDA support:
+   ```bash
+   # Check the PyTorch website for the command specific to your CUDA version
+   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
+   ```
+
+### Audio Setup
+
+Ensure your microphone is properly configured:
+
+1. On Windows: Set your microphone as the default recording device in Sound settings
+2. On macOS: Allow microphone access in System Preferences > Security & Privacy
+3. On Linux: Check your microphone is recognized with `arecord -l`
 
 ## Usage
 
@@ -79,6 +142,14 @@ python src/evaluate.py --model models/emotion_model_final.pt --mode evaluate --s
 - `monitor`: Continuously monitor emotions for a specified duration
 - `analyze`: Analyze speech rate over time, either from a recorded file or in real-time
 
+### Real-Time Feedback Application
+
+Once your model is trained, you can run the real-time feedback application:
+
+```bash
+python src/run_feedback.py
+```
+
 ## Project Structure
 
 ```
@@ -87,11 +158,11 @@ python src/evaluate.py --model models/emotion_model_final.pt --mode evaluate --s
 ├── models/                    # Saved model checkpoints
 ├── src/
 │   ├── audio_processing.py    # Audio preprocessing functions
-│   ├── feature_extraction.py  # Speech feature extraction
-│   ├── emotion_model.py       # Emotion classification model
 │   ├── rl_agent.py            # Reinforcement learning agent
 │   ├── train.py               # Training script
 │   └── evaluate.py            # Evaluation script
+├── notebooks/                 # Jupyter notebooks for exploration and visualization
+├── logs/                      # Training logs and tensorboard files
 ├── INSTRUCTIONS.md            # Detailed instructions for model training
 ├── requirements.txt           # Project dependencies
 └── README.md                  # This file
@@ -115,6 +186,14 @@ python src/evaluate.py --model models/emotion_model_final.pt --mode evaluate --s
    - Model updates its weights based on this feedback
    - Over time, adapts specifically to your voice and expression patterns
 
+## Performance Metrics
+
+The system monitors and visualizes:
+- Learning progress over time
+- Confusion matrix for emotion predictions
+- Speech rate analysis trends
+- Feature importance visualization
+
 ## Tips for Best Results
 
 1. **Initial Training**: Express emotions clearly and consistently during the initial training phase
@@ -122,6 +201,20 @@ python src/evaluate.py --model models/emotion_model_final.pt --mode evaluate --s
 3. **Consistent Feedback**: Give accurate feedback for the model to learn effectively
 4. **Regular Training**: Train the model regularly to improve its performance
 5. **Quiet Environment**: Record in a quiet environment for better audio quality
+
+## Troubleshooting
+
+- **Poor accuracy**: Collect more diverse speech samples
+- **Slow response time**: Optimize feature extraction pipeline
+- **Inconsistent learning**: Adjust reward function and exploration rate
+- **Overfitting to specific voice patterns**: Introduce variations in speech samples
+
+## Future Development
+
+1. Expand emotion categories
+2. Implement additional speech metrics (clarity, filler words)
+3. Develop enhanced user interface for feedback visualization
+4. Create API for integration with other applications
 
 ## License
 
