@@ -21,8 +21,12 @@ import pickle  # Added this import
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Import modules
-from src.audio_processing import record_audio, extract_audio_features, remove_silence, calculate_speech_rate, plot_waveform
+from src.audio_processing import (
+    record_audio, extract_audio_features, remove_silence, 
+    calculate_speech_rate, plot_waveform, load_audio
+)
 from src.rl_agent import EmotionDQNAgent, EMOTIONS
+from src.data_augmentation import augment_audio
 
 # Constants
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
@@ -48,28 +52,71 @@ def get_feature_vector(audio, sample_rate):
     audio = remove_silence(audio, sample_rate)
     if len(audio) == 0:
         # No speech detected, return zeros
-        return np.zeros(40)
+        return np.zeros(128)  # Expanded feature vector size
     
     # Extract features
-    features = extract_audio_features(audio, sample_rate)
+    features = extract_audio_features(audio, sample_rate, n_mfcc=20, n_mels=60)
     
-    # Flatten MFCC features and combine with other features
+    # Create an expanded feature vector with more emotional cues
     feature_vector = []
+    
+    # MFCC features (mean and std)
     feature_vector.extend(features['mfcc_mean'])
+    feature_vector.extend(features['mfcc_std'])  # Adding standard deviation
+    
+    # Spectral features
     feature_vector.append(features['spectral_centroid_mean'])
+    feature_vector.append(features['spectral_centroid_std'])
     feature_vector.append(features['spectral_rolloff_mean'])
+    feature_vector.append(features['spectral_rolloff_std'])
+    
+    # Pitch features
     feature_vector.append(features['f0_mean'])
     feature_vector.append(features['f0_std'])
-    feature_vector.append(features['zcr_mean'])
+    feature_vector.append(features.get('f0_min', 0))  # Min pitch
+    feature_vector.append(features.get('f0_max', 0))  # Max pitch
+    feature_vector.append(features.get('f0_range', 0))  # Pitch range
+    
+    # Energy features
     feature_vector.append(features['rms_mean'])
+    feature_vector.append(features.get('rms_std', 0))
+    feature_vector.append(features.get('rms_max', 0))
+    
+    # Rhythm features
     feature_vector.append(features['speech_rate'])
     
-    # Ensure consistent feature vector length
-    if len(feature_vector) < 40:
-        feature_vector.extend([0] * (40 - len(feature_vector)))
+    # Voice quality features (if available)
+    feature_vector.append(features.get('jitter', 0))
+    feature_vector.append(features.get('shimmer', 0))
+    feature_vector.append(features.get('hnr', 0))  # Harmonics-to-noise ratio
     
-    # Normalize features
-    feature_vector = np.array(feature_vector[:40])  # Limit to 40 features
+    # Zero-crossing rate
+    feature_vector.append(features['zcr_mean'])
+    feature_vector.append(features.get('zcr_std', 0))
+    
+    # Spectrogram statistics
+    if 'spectral_contrast_mean' in features:
+        feature_vector.extend(features['spectral_contrast_mean'])
+    
+    # Chroma features if available
+    if 'chroma_mean' in features:
+        feature_vector.extend(features['chroma_mean'])
+    
+    # Normalize feature vector to have unit variance
+    feature_vector = np.array(feature_vector)
+    
+    # Handle NaN or infinite values that might occur in feature extraction
+    feature_vector = np.nan_to_num(feature_vector)
+    
+    # Pad or truncate to fixed size for model input (128 features)
+    if len(feature_vector) < 128:
+        feature_vector = np.pad(feature_vector, (0, 128 - len(feature_vector)))
+    else:
+        feature_vector = feature_vector[:128]
+    
+    # Z-score normalization for numerical stability
+    epsilon = 1e-10  # To avoid division by zero
+    feature_vector = (feature_vector - np.mean(feature_vector)) / (np.std(feature_vector) + epsilon)
     
     return feature_vector
 
@@ -140,13 +187,104 @@ def initial_training(agent, samples, epochs=50):
     
     losses = []
     
+    # Augment training data to create a more diverse dataset
+    print("Augmenting training data...")
+    augmented_samples = []
+    
+    # Check if audio directory exists
+    audio_dir = os.path.join(DATA_DIR, 'audio')
+    if not os.path.exists(audio_dir):
+        print(f"Audio directory {audio_dir} does not exist. Skipping augmentation.")
+    else:
+        # Process original audio samples to extract raw audio for augmentation
+        audio_files = [f for f in os.listdir(audio_dir) if f.startswith('initial_sample_') and f.endswith('.wav')]
+        
+        # If we have the original audio files, augment them
+        if audio_files:
+            print(f"Found {len(audio_files)} original audio files for augmentation")
+            for audio_file in tqdm(audio_files, desc="Augmenting samples"):
+                # Extract emotion index from filename
+                parts = audio_file.split('_')
+                if len(parts) >= 3:
+                    try:
+                        # Try to parse emotion from filename
+                        emotion = parts[-1].replace('.wav', '')
+                        emotion_index = EMOTIONS.index(emotion)
+                        
+                        # Load audio
+                        filepath = os.path.join(audio_dir, audio_file)
+                        audio, sr = load_audio(filepath)
+                        
+                        # Create 3 augmented versions of each sample
+                        augmented_audios = augment_audio(audio, sr, num_augmentations=3)
+                        
+                        # Extract features from each augmented audio
+                        for aug_audio in augmented_audios:
+                            feature_vector = get_feature_vector(aug_audio, sr)
+                            augmented_samples.append((feature_vector, emotion_index))
+                    except (ValueError, IndexError):
+                        print(f"Couldn't parse emotion from {audio_file}, skipping")
+        else:
+            print("No initial sample audio files found. Generating augmented samples from existing feature vectors.")
+            # If no audio files, create synthetic variations of the existing feature vectors
+            for feature_vector, emotion_index in samples:
+                # Create 2 synthetic feature variations by adding small random noise
+                for _ in range(2):
+                    # Add small random noise to the feature vector (5% variation)
+                    noise = np.random.normal(0, 0.05 * np.abs(feature_vector).mean(), feature_vector.shape)
+                    augmented_feature = feature_vector + noise
+                    augmented_samples.append((augmented_feature, emotion_index))
+    
+    # Combine original and augmented samples
+    all_samples = samples + augmented_samples
+    print(f"Training with {len(samples)} original samples + {len(augmented_samples)} augmented samples = {len(all_samples)} total samples")
+    
+    # Ensure balanced class distribution by duplicating underrepresented classes
+    emotion_counts = {emotion_idx: 0 for emotion_idx in range(len(EMOTIONS))}
+    for _, emotion_idx in all_samples:
+        emotion_counts[emotion_idx] += 1
+    
+    # Find the emotion with the most samples (to balance towards)
+    max_count = max(emotion_counts.values())
+    
+    # Duplicate samples from underrepresented classes
+    balanced_samples = all_samples.copy()
+    
+    for emotion_idx, count in emotion_counts.items():
+        if count < max_count:
+            # Find all samples of this emotion
+            emotion_samples = [(feat, emo_idx) for feat, emo_idx in all_samples if emo_idx == emotion_idx]
+            
+            # Duplicate these samples to reach max_count (or close to it)
+            duplications_needed = max_count - count
+            
+            # If we need more duplications than available samples, we'll loop through multiple times
+            for _ in range(duplications_needed):
+                # Add a randomly selected sample of this emotion
+                if emotion_samples:
+                    balanced_samples.append(random.choice(emotion_samples))
+    
+    # Final training samples
+    training_samples = balanced_samples
+    print(f"After balancing: {len(training_samples)} total training samples")
+    
+    # Print class distribution
+    emotion_counts = {emotion: 0 for emotion in EMOTIONS}
+    for _, emotion_idx in training_samples:
+        emotion_counts[EMOTIONS[emotion_idx]] += 1
+    
+    print("Class distribution:")
+    for emotion, count in emotion_counts.items():
+        print(f"  {emotion.upper()}: {count} samples ({count/len(training_samples)*100:.1f}%)")
+    
+    # Train with balanced samples
     for epoch in tqdm(range(epochs)):
         epoch_losses = []
         
         # Shuffle samples
-        random.shuffle(samples)
+        random.shuffle(training_samples)
         
-        for feature_vector, emotion_index in samples:
+        for feature_vector, emotion_index in training_samples:
             # Create initial state
             state = feature_vector
             
@@ -200,6 +338,10 @@ def continuous_learning(agent, duration=30, num_episodes=50):
     print(f"Starting continuous learning for {num_episodes} episodes...")
     
     accuracies = []
+    losses = []
+    
+    # Track emotion distribution to ensure balanced training
+    emotion_counts = {emotion: 0 for emotion in EMOTIONS}
     
     for episode in range(num_episodes):
         print(f"\nEpisode {episode+1}/{num_episodes}")
@@ -217,9 +359,17 @@ def continuous_learning(agent, duration=30, num_episodes=50):
         
         print(f"Predicted emotion: {predicted_emotion.upper()}")
         
+        # Get emotion statistics
+        print("Current emotion distribution:")
+        total_samples = sum(emotion_counts.values()) or 1  # Avoid division by zero
+        for emotion, count in emotion_counts.items():
+            percentage = (count / total_samples) * 100
+            print(f"  {emotion.upper()}: {count} samples ({percentage:.1f}%)")
+        
         # Ask for feedback
-        print("Was this prediction correct? If not, what was the actual emotion?")
-        print("Emotions:", ", ".join(f"{i}: {emotion}" for i, emotion in enumerate(EMOTIONS)))
+        print("\nWas this prediction correct? If not, what was the actual emotion?")
+        print("Emotions:", ", ".join(f"{i}: {emotion.upper()}" for i, emotion in enumerate(EMOTIONS)))
+        print("Enter the correct emotion index, or -1 to skip:")
         
         try:
             actual_emotion_index = int(input("Enter the correct emotion index (or -1 to skip): "))
@@ -231,20 +381,41 @@ def continuous_learning(agent, duration=30, num_episodes=50):
             continue
         
         actual_emotion = EMOTIONS[actual_emotion_index]
+        emotion_counts[actual_emotion] += 1
         
-        # Calculate reward
-        reward = 1.0 if action == actual_emotion_index else -1.0
-        print(f"Reward: {reward:.1f}")
+        # Calculate reward with more nuanced scoring
+        # Base reward for correct prediction
+        correct_prediction = (action == actual_emotion_index)
+        
+        # Scale rewards to emphasize learning underrepresented emotions
+        emotion_frequency = emotion_counts[actual_emotion] / sum(emotion_counts.values())
+        rarity_bonus = 1.0 - emotion_frequency  # Bonus for rare emotions
+        
+        # Calculate final reward
+        if correct_prediction:
+            reward = 1.0 + (rarity_bonus * 0.5)  # Higher reward for rare emotions
+        else:
+            # Smaller penalty for incorrect more common emotions
+            reward = -1.0 * (1.0 - (rarity_bonus * 0.3))
+        
+        print(f"Reward: {reward:.2f} (correct: {correct_prediction}, rarity bonus: {rarity_bonus:.2f})")
         
         # Add to memory
         next_state = feature_vector  # Use same state as next state
         done = True
         agent.add_to_memory(feature_vector, actual_emotion_index, reward, next_state, done)
         
-        # Train step
+        # Train multiple steps to learn better from this example
         if len(agent.memory) >= agent.batch_size:
-            loss = agent.train_step()
-            print(f"Training loss: {loss:.4f}")
+            # Train multiple steps for better learning
+            total_loss = 0
+            num_train_steps = 3  # Train more on each sample for better learning
+            for _ in range(num_train_steps):
+                loss = agent.train_step()
+                total_loss += loss
+            avg_loss = total_loss / num_train_steps
+            losses.append(avg_loss)
+            print(f"Training loss: {avg_loss:.4f}")
         
         # Update emotion history
         agent.update_emotion_history(action, actual_emotion_index)
@@ -255,9 +426,12 @@ def continuous_learning(agent, duration=30, num_episodes=50):
         accuracies.append(overall_accuracy)
         
         print(f"Overall accuracy: {overall_accuracy:.2f}")
+        print("Per-emotion accuracies:")
+        for emotion, accuracy in emotion_accuracies.items():
+            print(f"  {emotion.upper()}: {accuracy:.2f}")
         
         # Save checkpoint
-        if (episode + 1) % 10 == 0:
+        if (episode + 1) % 5 == 0 or episode == num_episodes - 1:
             agent.save_model(f"emotion_model_continuous_{episode+1}.pt")
     
     print("Continuous learning completed.")
@@ -316,7 +490,7 @@ def main():
     args = parser.parse_args()
     
     # Initialize agent
-    input_dim = 40  # Based on our feature extraction
+    input_dim = 128  # Based on our feature extraction
     agent = EmotionDQNAgent(input_dim=input_dim)
     
     # Load model if specified

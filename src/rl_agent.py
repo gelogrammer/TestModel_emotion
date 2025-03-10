@@ -36,7 +36,7 @@ class EmotionQNetwork(nn.Module):
     Q-Network for emotion recognition using speech features.
     """
     
-    def __init__(self, input_dim, hidden_dim=128, output_dim=len(EMOTIONS)):
+    def __init__(self, input_dim, hidden_dim=256, output_dim=len(EMOTIONS)):
         """
         Initialize the Q-Network.
         
@@ -49,13 +49,33 @@ class EmotionQNetwork(nn.Module):
         
         self.network = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
             nn.ReLU(),
-            nn.Dropout(0.3),
+            nn.Dropout(0.2),
+            
             nn.Linear(hidden_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
             nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(hidden_dim, output_dim)
+            nn.Dropout(0.2),
+            
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.BatchNorm1d(hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            
+            nn.Linear(hidden_dim // 2, output_dim)
         )
+        
+        # Initialize weights properly
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        """Initialize network weights using He initialization"""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
     
     def forward(self, x):
         """
@@ -75,9 +95,9 @@ class EmotionDQNAgent:
     Deep Q-Network agent for emotion recognition.
     """
     
-    def __init__(self, input_dim, hidden_dim=128, learning_rate=0.001, 
-                 gamma=0.95, epsilon=1.0, epsilon_min=0.01, epsilon_decay=0.995,
-                 memory_size=10000, batch_size=64, target_update_freq=10):
+    def __init__(self, input_dim, hidden_dim=256, learning_rate=0.0005, 
+                 gamma=0.99, epsilon=1.0, epsilon_min=0.05, epsilon_decay=0.99,
+                 memory_size=20000, batch_size=128, target_update_freq=5):
         """
         Initialize the DQN agent.
         
@@ -115,8 +135,11 @@ class EmotionDQNAgent:
         self.target_network.load_state_dict(self.q_network.state_dict())
         self.target_network.eval()  # Target network is used for evaluation only
         
-        # Initialize optimizer
-        self.optimizer = optim.Adam(self.q_network.parameters(), lr=learning_rate)
+        # Initialize optimizer with weight decay for regularization
+        self.optimizer = optim.Adam(self.q_network.parameters(), lr=learning_rate, weight_decay=0.0001)
+        
+        # Learning rate scheduler
+        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=5, verbose=True)
         
         # Initialize replay memory
         self.memory = deque(maxlen=memory_size)
@@ -193,33 +216,45 @@ class EmotionDQNAgent:
         # Compute Q values
         q_values = self.q_network(states).gather(1, actions.unsqueeze(1)).squeeze(1)
         
-        # Compute target Q values
+        # Compute target Q values using Double DQN
         with torch.no_grad():
-            next_q_values = self.target_network(next_states).max(1)[0]
+            # Get actions from policy network
+            next_actions = self.q_network(next_states).argmax(1, keepdim=True)
+            # Get Q values from target network for those actions
+            next_q_values = self.target_network(next_states).gather(1, next_actions).squeeze(1)
             target_q_values = rewards + (1 - dones) * self.gamma * next_q_values
         
-        # Compute loss
-        loss = nn.MSELoss()(q_values, target_q_values)
+        # Compute Huber loss (more robust than MSE for outliers)
+        loss = nn.SmoothL1Loss()(q_values, target_q_values)
         
         # Optimize the model
         self.optimizer.zero_grad()
         loss.backward()
+        
+        # Gradient clipping to prevent exploding gradients
+        torch.nn.utils.clip_grad_norm_(self.q_network.parameters(), max_norm=1.0)
+        
         self.optimizer.step()
+        
+        # Update learning rate based on loss
+        self.scheduler.step(loss)
         
         # Update target network
         self.updates += 1
         if self.updates % self.target_update_freq == 0:
             self.target_network.load_state_dict(self.q_network.state_dict())
         
-        # Decay epsilon
-        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+        # Decay epsilon with a more aggressive strategy
+        if self.epsilon > self.epsilon_min:
+            self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
         
         # Log loss
-        self.losses.append(loss.item())
-        self.writer.add_scalar('Loss/train', loss.item(), self.updates)
+        loss_value = loss.item()
+        self.losses.append(loss_value)
+        self.writer.add_scalar('Loss/train', loss_value, self.updates)
         self.writer.add_scalar('Epsilon', self.epsilon, self.updates)
         
-        return loss.item()
+        return loss_value
     
     def update_emotion_history(self, predicted_emotion, actual_emotion):
         """

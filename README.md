@@ -28,7 +28,7 @@ The system uses reinforcement learning to learn from feedback, allowing it to ad
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/gelogrammer/TestModel_emotion.git
+   git clone https://github.com/yourusername/speech-emotion-rl.git
    cd speech-emotion-rl
    ```
 
@@ -41,6 +41,11 @@ The system uses reinforcement learning to learn from feedback, allowing it to ad
 3. Install dependencies:
    ```bash
    pip install -r requirements.txt
+   ```
+
+4. Create necessary directories:
+   ```bash
+   mkdir -p data/raw data/processed models logs
    ```
 
 ### Package Requirements
@@ -119,6 +124,7 @@ This will:
 1. Collect 20 initial labeled samples (you'll be prompted to express specific emotions)
 2. Train the model for 50 epochs on these samples
 3. Begin continuous learning mode where you provide feedback on the model's predictions
+4. Save the trained model to the `models/` directory (typically as `emotion_model_latest.pt`)
 
 ### Options:
 
@@ -130,11 +136,24 @@ This will:
 
 ### Evaluating the Model
 
-To evaluate a trained model:
+Before evaluating, ensure you have trained the model first:
 
 ```bash
-python src/evaluate.py --model models/emotion_model_final.pt --mode evaluate --samples 10
+# First train a model
+python src/train.py --mode initial --samples 10 --epochs 30 --duration 5
 ```
+
+This will create a model file in the models/ directory. Then you can evaluate it:
+
+```bash
+# Use the correct path to your trained model
+python src/evaluate.py --model models/emotion_model_latest.pt --mode evaluate --samples 10
+```
+
+If you encounter a "Model file not found" error, check that:
+1. You've successfully completed the training step
+2. The model filename matches exactly what was generated during training
+3. You're running the command from the project root directory
 
 ### Modes:
 
@@ -204,6 +223,19 @@ The system monitors and visualizes:
 
 ## Troubleshooting
 
+### Model Not Found Errors
+- Ensure you've trained a model before evaluation
+- Check that the model path is correct
+- Run commands from the project root directory
+
+### TensorFlow Warnings
+You may see warnings like:
+```
+tensorflow/core/util/port.cc:113 oneDNN custom operations are on...
+```
+These are harmless TensorFlow configuration warnings and can be safely ignored.
+
+### Common Issues
 - **Poor accuracy**: Collect more diverse speech samples
 - **Slow response time**: Optimize feature extraction pipeline
 - **Inconsistent learning**: Adjust reward function and exploration rate
